@@ -1,0 +1,22 @@
+# Checklist
+
+- [x] MJPEG 流：`/api/raw` 写入预览帧后调用 `frame_event.set()`
+- [x] MJPEG 流：`/api/stream` 生成器用 `frame_event.wait(timeout=1.0)` 替代 `time.sleep(1.0/15)`
+- [x] MJPEG 流：新帧到达后 100ms 内推送（测试 `test_stream_pushes_frame_immediately_after_update` 通过）
+- [x] 并发：`app.run(threaded=True)` 已启用
+- [x] GC 反模式：`cleanup_memory` 函数已删除
+- [x] GC 反模式：`/api/frame` finally 块不再调用 `cleanup_memory`
+- [x] GC 反模式：`LAST_CLEANUP_TIME`、`CLEANUP_INTERVAL`、`import gc` 已删除
+- [x] import 提升：顶部有 `from flask import ..., send_from_directory` 与 `import shutil`
+- [x] import 提升：3 个静态路由内无 `from flask import send_from_directory`
+- [x] import 提升：`save_photo` 与 `migrate_legacy_photos_to_album` 内无 `import shutil`
+- [x] 相册缓存：`get_album_files()` 函数已实现，基于目录 mtime 缓存
+- [x] 相册缓存：`/api/photos` 用集合查找替代 `os.path.exists`
+- [x] 相册缓存：第二次请求不调用 `os.path.exists`（测试 `test_photos_cache_avoids_repeated_path_exists` 通过）
+- [x] capture timeout：`/api/capture` 的 `requests.post` timeout 为 5
+- [x] 固件：`g_latestFrame` 声明已删除
+- [x] 固件：`s_fbLock` 声明与 setup 创建语句已删除
+- [x] 固件：grep 无 `g_latestFrame|s_fbLock` 残留
+- [x] 全量测试：后端 21 个测试全部通过
+- [x] 启动验证：`python -c "import app"` 无错误，`frame_event` 与 `_album_files_cache` 变量就绪
+- [x] 外部 API：所有端点签名与响应格式未变（无 BREAKING change）
