@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32-CAM 实时监控</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/antd@5.12.8/dist/reset.css">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #1890ff;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .video-container {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        #preview {
+            max-width: 100%;
+            height: auto;
+            border: 1px solid #e8e8e8;
+            border-radius: 4px;
+        }
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+        button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .btn-primary {
+            background-color: #1890ff;
+            color: white;
+        }
+        .btn-primary:hover {
+            background-color: #40a9ff;
+        }
+        .btn-default {
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        .btn-default:hover {
+            background-color: #e8e8e8;
+        }
+        .btn-danger {
+            background-color: #ff4d4f;
+            color: white;
+        }
+        .btn-danger:hover {
+            background-color: #ff7875;
+        }
+        .btn-success {
+            background-color: #52c41a;
+            color: white;
+        }
+        .btn-success:hover {
+            background-color: #73d13d;
+        }
+        .status {
+            text-align: center;
+            margin: 10px 0;
+            padding: 10px;
+            background-color: #f0f9ff;
+            border-radius: 4px;
+            border: 1px solid #bae7ff;
+        }
+        .capture-result {
+            margin-top: 20px;
+            text-align: center;
+        }
+        #captureResult {
+            max-width: 100%;
+            height: 600px;
+            border: 1px solid #e8e8e8;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .ip-config {
+            text-align: center;
+            margin: 20px 0;
+        }
+        .ip-input {
+            padding: 8px;
+            border: 1px solid #d9d9d9;
+            border-radius: 4px;
+            width: 200px;
+            margin-right: 10px;
+        }
+        .ip-input:focus {
+            outline: none;
+            border-color: #1890ff;
+            box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+        }
+        .flash-toggle {
+            text-align: center;
+            margin: 10px 0;
+        }
+        .flash-toggle label {
+            margin-left: 5px;
+        }
+        .flash-toggle input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #1890ff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        /* 相册样式 */
+        .photo-gallery {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 2px solid #e8e8e8;
+        }
+        .photo-gallery h2 {
+            text-align: center;
+            color: #1890ff;
+            margin-bottom: 20px;
+        }
+        .gallery-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 15px;
+            padding: 10px;
+        }
+        .gallery-item {
+            position: relative;
+            border: 2px solid #e8e8e8;
+            border-radius: 8px;
+            overflow: hidden;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        .gallery-item:hover {
+            border-color: #1890ff;
+            transform: scale(1.02);
+        }
+        .gallery-item.selected {
+            border-color: #52c41a;
+            box-shadow: 0 0 0 3px rgba(82, 196, 26, 0.3);
+        }
+        .gallery-item img {
+            width: 100%;
+            height: 120px;
+            object-fit: cover;
+            display: block;
+        }
+        .gallery-item .select-overlay {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            width: 24px;
+            height: 24px;
+            background-color: white;
+            border: 2px solid #d9d9d9;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            color: transparent;
+            transition: all 0.2s ease;
+        }
+        .gallery-item.selected .select-overlay {
+            background-color: #52c41a;
+            border-color: #52c41a;
+            color: white;
+        }
+        .gallery-item .delete-btn {
+            position: absolute;
+            top: 5px;
+            left: 5px;
+            width: 24px;
+            height: 24px;
+            background-color: rgba(255, 77, 79, 0.9);
+            border: none;
+            border-radius: 4px;
+            color: white;
+            font-size: 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+        .gallery-item:hover .delete-btn {
+            opacity: 1;
+        }
+        .gallery-item .delete-btn:hover {
+            background-color: #ff7875;
+        }
+        .gallery-controls {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin: 15px 0;
+            flex-wrap: wrap;
+        }
+        .gallery-stats {
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+            margin: 10px 0;
+        }
+        .empty-gallery {
+            text-align: center;
+            color: #999;
+            padding: 40px;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ESP32-CAM 实时监控</h1>
+        
+        <!-- IP地址配置 -->
+        <div class="ip-config">
+            <input type="text" id="esp32Ip" class="ip-input" placeholder="ESP32-CAM IP地址">
+            <button class="btn-primary" onclick="saveIpAddress()">保存IP</button>
+            <p style="margin-top: 5px; font-size: 12px; color: #666;">例如: 192.168.137.74</p>
+        </div>
+        
+        <!-- 闪光灯控制 -->
+        <div class="flash-toggle">
+            <input type="checkbox" id="flashToggle" onchange="toggleFlash()">
+            <label for="flashToggle">开启闪光灯</label>
+        </div>
+        
+        <!-- 视频预览 -->
+        <div class="video-container">
+            <img id="preview" src="" alt="实时预览">
+        </div>
+        
+        <!-- 状态显示 -->
+        <div class="status" id="status">
+            等待连接...
+        </div>
+        
+        <!-- 控制按钮 -->
+        <div class="controls">
+            <button class="btn-primary" onclick="startCapture()" id="captureBtn">拍照</button>
+            <button class="btn-default" onclick="clearCapture()">清除</button>
+        </div>
+        
+        <!-- 拍照结果 -->
+        <div class="capture-result" id="captureResultContainer" style="display: none;">
+            <h3>拍照结果</h3>
+            <img id="captureResult" src="" alt="拍照结果">
+            <div style="margin-top: 10px;">
+                <button class="btn-success" onclick="savePhoto()">保存到相册</button>
+                <button class="btn-default" onclick="discardPhoto()">放弃</button>
+            </div>
+        </div>
+        
+        <!-- 相册 -->
+        <div class="photo-gallery" id="photoGallery">
+            <h2>📷 我的相册</h2>
+            <div class="gallery-stats" id="galleryStats">共 0 张照片，已选择 0 张</div>
+            <div class="gallery-controls">
+                <button class="btn-primary" onclick="selectAllPhotos()">全选</button>
+                <button class="btn-default" onclick="deselectAllPhotos()">取消全选</button>
+                <button class="btn-danger" onclick="deleteSelectedPhotos()">删除选中</button>
+                <button class="btn-success" onclick="downloadSelectedPhotos()">下载选中</button>
+            </div>
+            <div class="gallery-grid" id="galleryGrid">
+                <div class="empty-gallery">相册为空，拍摄照片后点击"保存到相册"即可添加</div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let lastCaptureUrl = null;
+        let lastCaptureFilename = null;
+        let isCapturing = false;
+        let captureTimeout = null;
+        let esp32Ip = '';
+        let flashEnabled = false;
+        let savedPhotos = [];
+        
+        // 从本地存储加载IP地址
+        function loadIpAddress() {
+            const savedIp = localStorage.getItem('esp32CamIp');
+            if (savedIp) {
+                document.getElementById('esp32Ip').value = savedIp;
+                esp32Ip = savedIp;
+            }
+        }
+        
+        // 保存IP地址到本地存储
+        function saveIpAddress() {
+            const ip = document.getElementById('esp32Ip').value.trim();
+            if (ip) {
+                localStorage.setItem('esp32CamIp', ip);
+                esp32Ip = ip;
+                alert('IP地址已保存');
+            }
+        }
+        
+        // 加载闪光灯状态
+        function loadFlashState() {
+            fetch('/api/flash')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    flashEnabled = data.flash_enabled;
+                    document.getElementById('flashToggle').checked = flashEnabled;
+                }
+            })
+            .catch(error => console.error('加载闪光灯状态失败:', error));
+        }
+        
+        // 切换闪光灯
+        function toggleFlash() {
+            const enable = document.getElementById('flashToggle').checked;
+            const ip = document.getElementById('esp32Ip').value.trim();
+            
+            fetch('/api/flash', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ 
+                    enable: enable,
+                    esp32_ip: ip || esp32Ip
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    flashEnabled = data.flash_enabled;
+                    console.log(data.message);
+                } else {
+                    alert('闪光灯控制失败: ' + (data.error || '未知错误'));
+                    document.getElementById('flashToggle').checked = !enable;
+                }
+            })
+            .catch(error => {
+                console.error('闪光灯控制失败:', error);
+                alert('闪光灯控制失败: ' + error.message);
+                document.getElementById('flashToggle').checked = !enable;
+            });
+        }
+        
+        // 更新预览帧（MJPEG 流：浏览器维持单连接，无需轮询）
+        function updatePreview() {
+            const img = document.getElementById('preview');
+            // 仅在未连接到流时建立连接，避免重复刷新导致流重启
+            if (!img.src || !img.src.includes('/api/stream')) {
+                img.src = '/api/stream';
+            }
+        }
+        
+        // 开始拍照
+        function startCapture() {
+            if (isCapturing) return;
+            
+            const ip = document.getElementById('esp32Ip').value.trim();
+            if (!ip) {
+                alert('请输入ESP32-CAM IP地址');
+                return;
+            }
+            
+            isCapturing = true;
+            document.getElementById('status').innerHTML = '<div class="loading"></div> 拍照中...';
+            document.getElementById('captureBtn').disabled = true;
+            
+            // 发送拍照请求
+            fetch('/api/capture', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ esp32_ip: ip })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    console.log('拍照指令已发送');
+                    
+                    // 等待拍照完成
+                    checkCaptureStatus();
+                } else {
+                    alert('发送拍照指令失败: ' + (data.error || '未知错误'));
+                    resetCaptureState();
+                }
+            })
+            .catch(error => {
+                console.error('拍照失败:', error);
+                alert('拍照失败: ' + error.message);
+                resetCaptureState();
+            });
+        }
+        
+        // 检查拍照状态
+        function checkCaptureStatus() {
+            if (!isCapturing) return;
+            
+            fetch('/api/capture/status')
+            .then(response => response.json())
+            .then(data => {
+                if (data.is_capturing) {
+                    // 拍照中，继续检查
+                    setTimeout(checkCaptureStatus, 1000);
+                } else if (data.last_captured_photo) {
+                    // 拍照完成
+                    lastCaptureFilename = data.last_captured_photo.filename;
+                    showCaptureResult(data.last_captured_photo.url);
+                    resetCaptureState();
+                } else {
+                    // 拍照超时
+                    alert('拍照超时');
+                    resetCaptureState();
+                }
+            })
+            .catch(error => {
+                console.error('检查拍照状态失败:', error);
+                resetCaptureState();
+            });
+        }
+        
+        // 显示拍照结果
+        function showCaptureResult(url) {
+            lastCaptureUrl = url;
+            document.getElementById('captureResult').src = url;
+            document.getElementById('captureResultContainer').style.display = 'block';
+            document.getElementById('status').textContent = '拍照完成';
+        }
+        
+        // 保存照片到相册
+        function savePhoto() {
+            if (!lastCaptureFilename) {
+                alert('没有可保存的照片');
+                return;
+            }
+            
+            fetch('/api/photos/save', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ filename: lastCaptureFilename })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('照片已保存到相册');
+                    loadGallery(); // 刷新相册
+                } else {
+                    alert('保存失败: ' + (data.error || '未知错误'));
+                }
+            })
+            .catch(error => {
+                console.error('保存照片失败:', error);
+                alert('保存照片失败: ' + error.message);
+            });
+        }
+        
+        // 放弃照片
+        function discardPhoto() {
+            document.getElementById('captureResultContainer').style.display = 'none';
+            document.getElementById('captureResult').src = '';
+            lastCaptureUrl = null;
+            lastCaptureFilename = null;
+        }
+        
+        // 清除拍照记录
+        function clearCapture() {
+            fetch('/api/capture/clear', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    document.getElementById('captureResultContainer').style.display = 'none';
+                    document.getElementById('captureResult').src = '';
+                    lastCaptureUrl = null;
+                    lastCaptureFilename = null;
+                    document.getElementById('status').textContent = '拍照记录已清除';
+                }
+            });
+        }
+        
+        // 重置拍照状态
+        function resetCaptureState() {
+            isCapturing = false;
+            document.getElementById('status').textContent = '就绪';
+            document.getElementById('captureBtn').disabled = false;
+            if (captureTimeout) {
+                clearTimeout(captureTimeout);
+            }
+        }
+        
+        // 加载相册
+        function loadGallery() {
+            fetch('/api/photos')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    savedPhotos = data.photos || [];
+                    renderGallery();
+                }
+            })
+            .catch(error => console.error('加载相册失败:', error));
+        }
+        
+        // 渲染相册
+        function renderGallery() {
+            const grid = document.getElementById('galleryGrid');
+            const stats = document.getElementById('galleryStats');
+            
+            const selectedCount = savedPhotos.filter(p => p.selected).length;
+            stats.textContent = `共 ${savedPhotos.length} 张照片，已选择 ${selectedCount} 张`;
+            
+            if (savedPhotos.length === 0) {
+                grid.innerHTML = '<div class="empty-gallery">相册为空，拍摄照片后点击"保存到相册"即可添加</div>';
+                return;
+            }
+            
+            grid.innerHTML = savedPhotos.map(photo => `
+                <div class="gallery-item ${photo.selected ? 'selected' : ''}" onclick="togglePhotoSelection('${photo.filename}')">
+                    <button class="delete-btn" onclick="event.stopPropagation(); deletePhoto('${photo.filename}')">×</button>
+                    <div class="select-overlay">✓</div>
+                    <img src="${photo.url}" alt="${photo.filename}" loading="lazy">
+                </div>
+            `).join('');
+        }
+        
+        // 切换照片选择状态
+        function togglePhotoSelection(filename) {
+            fetch('/api/photos/select', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ 
+                    filename: filename,
+                    selected: !savedPhotos.find(p => p.filename === filename)?.selected
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    loadGallery(); // 刷新相册
+                }
+            })
+            .catch(error => console.error('选择照片失败:', error));
+        }
+        
+        // 全选照片
+        function selectAllPhotos() {
+            const promises = savedPhotos
+                .filter(p => !p.selected)
+                .map(p => fetch('/api/photos/select', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filename: p.filename, selected: true })
+                }));
+            
+            Promise.all(promises).then(() => loadGallery());
+        }
+        
+        // 取消全选
+        function deselectAllPhotos() {
+            const promises = savedPhotos
+                .filter(p => p.selected)
+                .map(p => fetch('/api/photos/select', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filename: p.filename, selected: false })
+                }));
+            
+            Promise.all(promises).then(() => loadGallery());
+        }
+        
+        // 删除照片
+        function deletePhoto(filename) {
+            if (!confirm('确定要删除这张照片吗？')) return;
+            
+            fetch('/api/photos/delete', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ filename: filename })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    loadGallery(); // 刷新相册
+                }
+            })
+            .catch(error => console.error('删除照片失败:', error));
+        }
+        
+        // 删除选中的照片
+        function deleteSelectedPhotos() {
+            const selectedPhotos = savedPhotos.filter(p => p.selected);
+            if (selectedPhotos.length === 0) {
+                alert('请先选择要删除的照片');
+                return;
+            }
+            
+            if (!confirm(`确定要删除选中的 ${selectedPhotos.length} 张照片吗？`)) return;
+            
+            const promises = selectedPhotos.map(p => 
+                fetch('/api/photos/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filename: p.filename })
+                })
+            );
+            
+            Promise.all(promises).then(() => loadGallery());
+        }
+        
+        // 下载选中的照片
+        function downloadSelectedPhotos() {
+            const selectedPhotos = savedPhotos.filter(p => p.selected);
+            if (selectedPhotos.length === 0) {
+                alert('请先选择要下载的照片');
+                return;
+            }
+            
+            selectedPhotos.forEach(photo => {
+                const link = document.createElement('a');
+                link.href = photo.url;
+                link.download = photo.filename;
+                link.target = '_blank';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            });
+        }
+        
+        // 初始化
+        function init() {
+            loadIpAddress();
+            loadFlashState();
+            loadGallery();
+            
+            // 启动 MJPEG 流连接（浏览器自动维护，无需轮询）
+            updatePreview();
+
+            // 流断开时自动重连（如服务器重启）
+            const previewImg = document.getElementById('preview');
+            previewImg.onerror = function() {
+                setTimeout(function() {
+                    previewImg.src = '/api/stream';
+                }, 2000);
+            };
+            
+            // 初始状态
+            document.getElementById('status').textContent = '就绪';
+        }
+        
+        // 页面加载完成后初始化
+        window.onload = init;
+    </script>
+</body>
+</html>

@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32-CAM 实时监控</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 30px;
+            max-width: 800px;
+            width: 100%;
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 24px;
+        }
+
+        .video-container {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        #videoStream {
+            width: 100%;
+            max-width: 640px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            background: #f0f0f0;
+        }
+
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #666;
+        }
+
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+
+        .status {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f8f9ff;
+            border-radius: 10px;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+
+        .status-online {
+            background: #28a745;
+        }
+
+        .status-offline {
+            background: #dc3545;
+        }
+
+        .bluetooth-section {
+            margin-top: 20px;
+            padding: 20px;
+            background: #f8f9ff;
+            border-radius: 10px;
+        }
+
+        .bluetooth-section h3 {
+            color: #333;
+            margin-bottom: 15px;
+        }
+
+        .bluetooth-controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        #bluetoothDevices {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+
+        .message {
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 15px;
+            display: none;
+        }
+
+        .message-success {
+            display: block;
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .message-error {
+            display: block;
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .capture-history {
+            margin-top: 20px;
+        }
+
+        .capture-history h3 {
+            color: #333;
+            margin-bottom: 15px;
+        }
+
+        .history-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 15px;
+        }
+
+        .history-item {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .history-item img {
+            width: 100%;
+            height: 100px;
+            object-fit: cover;
+        }
+
+        .history-info {
+            padding: 10px;
+            font-size: 12px;
+            color: #666;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 20px;
+            }
+
+            .controls {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .btn {
+                width: 100%;
+                max-width: 300px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📷 ESP32-CAM 实时监控</h1>
+        
+        <div class="status">
+            <div class="status-item">
+                <div class="status-indicator status-offline" id="websocketStatus"></div>
+                <span>WebSocket: <span id="websocketStatusText">未连接</span></span>
+            </div>
+            <div class="status-item">
+                <div class="status-indicator status-offline" id="bluetoothStatus"></div>
+                <span>蓝牙: <span id="bluetoothStatusText">未连接</span></span>
+            </div>
+        </div>
+        
+        <div class="video-container">
+            <img id="videoStream" src="" alt="实时画面">
+        </div>
+        
+        <div class="controls">
+            <button class="btn btn-primary" id="captureBtn">📷 拍照</button>
+            <button class="btn btn-secondary" id="refreshBtn">🔄 刷新</button>
+        </div>
+        
+        <div class="bluetooth-section">
+            <h3>蓝牙控制</h3>
+            <div class="bluetooth-controls">
+                <button class="btn btn-secondary" id="scanBluetoothBtn">🔍 扫描设备</button>
+                <button class="btn btn-secondary" id="connectBluetoothBtn">📱 连接设备</button>
+            </div>
+            <select id="bluetoothDevices" disabled>
+                <option value="">选择蓝牙设备</option>
+            </select>
+            <div class="message" id="bluetoothMessage"></div>
+        </div>
+        
+        <div class="capture-history">
+            <h3>拍照历史</h3>
+            <div class="history-grid" id="historyGrid">
+                <!-- 历史照片将在这里显示 -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // WebSocket连接
+        const socket = io();
+        
+        // 元素引用
+        const videoStream = document.getElementById('videoStream');
+        const captureBtn = document.getElementById('captureBtn');
+        const refreshBtn = document.getElementById('refreshBtn');
+        const websocketStatus = document.getElementById('websocketStatus');
+        const websocketStatusText = document.getElementById('websocketStatusText');
+        const bluetoothStatus = document.getElementById('bluetoothStatus');
+        const bluetoothStatusText = document.getElementById('bluetoothStatusText');
+        const scanBluetoothBtn = document.getElementById('scanBluetoothBtn');
+        const connectBluetoothBtn = document.getElementById('connectBluetoothBtn');
+        const bluetoothDevices = document.getElementById('bluetoothDevices');
+        const bluetoothMessage = document.getElementById('bluetoothMessage');
+        const historyGrid = document.getElementById('historyGrid');
+        
+        // WebSocket事件处理
+        socket.on('connect', () => {
+            console.log('WebSocket连接成功');
+            websocketStatus.className = 'status-indicator status-online';
+            websocketStatusText.textContent = '已连接';
+        });
+        
+        socket.on('disconnect', () => {
+            console.log('WebSocket断开连接');
+            websocketStatus.className = 'status-indicator status-offline';
+            websocketStatusText.textContent = '未连接';
+        });
+        
+        socket.on('frame', (data) => {
+            // 接收ESP32-CAM发送的画面数据
+            const blob = new Blob([data], { type: 'image/jpeg' });
+            const url = URL.createObjectURL(blob);
+            videoStream.src = url;
+        });
+        
+        socket.on('connected', (data) => {
+            console.log('连接成功:', data);
+        });
+        
+        // 拍照按钮事件
+        captureBtn.addEventListener('click', () => {
+            socket.emit('capture');
+            showMessage('拍照指令已发送', 'success');
+        });
+        
+        // 刷新按钮事件
+        refreshBtn.addEventListener('click', () => {
+            location.reload();
+        });
+        
+        // 蓝牙相关代码
+        let bluetoothDevice = null;
+        let bluetoothCharacteristic = null;
+        
+        // 检查浏览器是否支持蓝牙
+        if ('bluetooth' in navigator) {
+            console.log('浏览器支持Web Bluetooth API');
+        } else {
+            showBluetoothMessage('浏览器不支持Web Bluetooth API', 'error');
+            scanBluetoothBtn.disabled = true;
+            connectBluetoothBtn.disabled = true;
+        }
+        
+        // 扫描蓝牙设备
+        scanBluetoothBtn.addEventListener('click', async () => {
+            try {
+                showBluetoothMessage('正在扫描蓝牙设备...', 'success');
+                
+                const device = await navigator.bluetooth.requestDevice({
+                    acceptAllDevices: true,
+                    optionalServices: ['generic_access']
+                });
+                
+                bluetoothDevice = device;
+                
+                // 添加到设备列表
+                const option = document.createElement('option');
+                option.value = device.id;
+                option.textContent = device.name || '未知设备';
+                bluetoothDevices.appendChild(option);
+                bluetoothDevices.disabled = false;
+                
+                showBluetoothMessage(`找到设备: ${device.name || '未知设备'}`, 'success');
+            } catch (error) {
+                showBluetoothMessage('扫描失败: ' + error.message, 'error');
+                console.error('蓝牙扫描错误:', error);
+            }
+        });
+        
+        // 连接蓝牙设备
+        connectBluetoothBtn.addEventListener('click', async () => {
+            if (!bluetoothDevice) {
+                showBluetoothMessage('请先扫描并选择蓝牙设备', 'error');
+                return;
+            }
+            
+            try {
+                showBluetoothMessage('正在连接蓝牙设备...', 'success');
+                
+                const server = await bluetoothDevice.gatt.connect();
+                
+                bluetoothStatus.className = 'status-indicator status-online';
+                bluetoothStatusText.textContent = '已连接';
+                showBluetoothMessage('蓝牙设备连接成功', 'success');
+                
+                // 监听蓝牙设备断开连接
+                bluetoothDevice.addEventListener('gattserverdisconnected', () => {
+                    bluetoothStatus.className = 'status-indicator status-offline';
+                    bluetoothStatusText.textContent = '未连接';
+                    showBluetoothMessage('蓝牙设备已断开连接', 'error');
+                });
+                
+            } catch (error) {
+                showBluetoothMessage('连接失败: ' + error.message, 'error');
+                console.error('蓝牙连接错误:', error);
+            }
+        });
+        
+        // 显示消息
+        function showMessage(text, type) {
+            const message = document.createElement('div');
+            message.className = `message message-${type}`;
+            message.textContent = text;
+            
+            document.querySelector('.controls').after(message);
+            
+            setTimeout(() => {
+                message.remove();
+            }, 3000);
+        }
+        
+        // 显示蓝牙消息
+        function showBluetoothMessage(text, type) {
+            bluetoothMessage.className = `message message-${type}`;
+            bluetoothMessage.textContent = text;
+            
+            setTimeout(() => {
+                bluetoothMessage.className = 'message';
+            }, 3000);
+        }
+        
+        // 加载历史照片
+        function loadHistory() {
+            fetch('/list')
+                .then(response => response.json())
+                .then(data => {
+                    historyGrid.innerHTML = '';
+                    
+                    if (data.files && data.files.length > 0) {
+                        data.files.slice(-6).forEach(file => {
+                            const item = document.createElement('div');
+                            item.className = 'history-item';
+                            item.innerHTML = `
+                                <img src="/uploads/${file.filename}" alt="${file.filename}">
+                                <div class="history-info">
+                                    <div>${file.filename}</div>
+                                    <div>${(file.size / 1024).toFixed(2)} KB</div>
+                                </div>
+                            `;
+                            historyGrid.appendChild(item);
+                        });
+                    } else {
+                        historyGrid.innerHTML = '<p style="text-align: center; color: #666;">暂无历史照片</p>';
+                    }
+                })
+                .catch(error => {
+                    console.error('加载历史照片失败:', error);
+                });
+        }
+        
+        // 初始化加载历史照片
+        loadHistory();
+        
+        // 每10秒刷新一次历史照片
+        setInterval(loadHistory, 10000);
+        
+        // 键盘快捷键
+        document.addEventListener('keydown', (e) => {
+            if (e.key === ' ' || e.key === 'Enter') {
+                e.preventDefault();
+                captureBtn.click();
+            }
+        });
+    </script>
+</body>
+</html>
