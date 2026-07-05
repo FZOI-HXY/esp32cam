@@ -1,8 +1,8 @@
-# ESP32-CAM 照片上传服务器启动脚本
+# MobileEye 移动图像采集服务器启动脚本
 # 使用方法: 右键点击此文件，选择"使用 PowerShell 运行"
 
 Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "   ESP32-CAM 照片上传服务器启动脚本" -ForegroundColor Cyan
+Write-Host "   MobileEye 移动图像采集服务器启动脚本" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
