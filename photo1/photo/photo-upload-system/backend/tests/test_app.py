@@ -530,3 +530,27 @@ def test_select_photo_skips_persist_when_unchanged(app, client):
     finally:
         app.persist_state = original_persist
 
+
+def test_validate_esp32_ip_accepts_ipv6_link_local(app):
+    """validate_esp32_ip 应接受 IPv6 链路本地地址（fe80:: 前缀）。"""
+    validated = app.validate_esp32_ip('fe80::1')
+    assert validated == 'fe80::1'
+
+
+def test_validate_esp32_ip_accepts_ipv6_unique_local(app):
+    """validate_esp32_ip 应接受 IPv6 唯一本地地址（fd00:: 前缀）。"""
+    validated = app.validate_esp32_ip('fd00::1')
+    assert validated == 'fd00::1'
+
+
+def test_validate_esp32_ip_accepts_ipv6_loopback(app):
+    """validate_esp32_ip 应接受 IPv6 回环地址（::1）。"""
+    validated = app.validate_esp32_ip('::1')
+    assert validated == '::1'
+
+
+def test_validate_esp32_ip_rejects_ipv6_public(app):
+    """validate_esp32_ip 应拒绝 IPv6 公网地址（2600:: 前缀），防止 SSRF。"""
+    validated = app.validate_esp32_ip('2600::1')
+    assert validated is None
+

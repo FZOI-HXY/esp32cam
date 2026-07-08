@@ -83,12 +83,9 @@ def allowed_file(filename):
 def validate_esp32_ip(ip_str):
     """校验 ESP32-CAM IP 地址：仅允许私有/回环/链路本地地址，防止 SSRF。
 
-    返回校验通过的 IP 字符串；不通过返回 None。
+    支持 IPv4 和 IPv6 两种格式。返回校验通过的 IP 字符串；不通过返回 None。
     """
     if not ip_str:
-        return None
-    ip_pattern = r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$'
-    if not re.match(ip_pattern, ip_str):
         return None
     try:
         addr = ipaddress.ip_address(ip_str)

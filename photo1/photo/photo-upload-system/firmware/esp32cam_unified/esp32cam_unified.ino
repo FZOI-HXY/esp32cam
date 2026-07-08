@@ -93,7 +93,9 @@ static int postRaw(const uint8_t* data, size_t len, const char* resolution) {
   http.addHeader("X-ESP32-IP", WiFi.localIP().toString().c_str());
   http.setTimeout(HTTP_TIMEOUT_MS);
 
-  int code = http.POST(data, len);
+  // HTTPClient::POST 签名要求 uint8_t*（非 const），但内部不会修改 payload。
+  // 使用 const_cast 安全去除 const 语义，避免数据复制。
+  int code = http.POST(const_cast<uint8_t*>(data), len);
   http.end();
   return code;
 }
