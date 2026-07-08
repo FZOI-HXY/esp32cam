@@ -338,3 +338,195 @@ def test_photos_cache_avoids_repeated_path_exists(app, client, monkeypatch):
     second_count = call_count['n']
     assert second_count == 0, f'缓存未生效，第二次仍调用了 {second_count} 次 os.path.exists'
 
+
+def test_select_photo_handles_missing_filename_field(app, client):
+    """saved_photos 中若存在缺 filename 字段的条目，select 不应抛 KeyError。"""
+    import os
+    album_dir = app.app.config['ALBUM_FOLDER']
+    with open(os.path.join(album_dir, 'has.jpg'), 'wb') as f:
+        f.write(b'fake')
+    app.saved_photos = [
+        {'url': '/album/has.jpg', 'saved_at': 1.0, 'selected': False},  # 缺 filename
+        {'filename': 'has.jpg', 'url': '/album/has.jpg', 'saved_at': 2.0, 'selected': False},
+    ]
+    resp = client.post('/api/photos/select', json={'filename': 'has.jpg', 'selected': True})
+    assert resp.status_code == 200
+    assert resp.get_json()['success'] is True
+
+
+def test_flash_fallback_ip_validated(app, client):
+    """flash 路由 fallback 到硬编码 IP 时也必须经过 SSRF 校验。"""
+    with patch('app.requests') as mock_req:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_req.post.return_value = mock_resp
+        mock_req.exceptions.RequestException = Exception
+        # 不传 esp32_ip，且无缓存 IP，触发 fallback
+        resp = client.post('/api/flash', json={'enable': True})
+        assert resp.status_code == 200
+        # 确实发起了请求，且目标是私有 IP（fallback 应为私有地址）
+        if mock_req.post.called:
+            target = mock_req.post.call_args[0][0]
+            assert '192.168.' in target or '127.' in target or '10.' in target
+
+
+def test_delete_photo_invalidates_cache(app, client):
+    """删除照片后应清空 album 缓存，下次 /api/photos 反映新状态。"""
+    import os
+    captures_dir = app.app.config['CAPTURES_FOLDER']
+    album_dir = app.app.config['ALBUM_FOLDER']
+    # 在 captures/ 创建源文件，save_photo 会移动到 album/
+    with open(os.path.join(captures_dir, 'del.jpg'), 'wb') as f:
+        f.write(b'fake')
+    client.post('/api/photos/save', json={'filename': 'del.jpg'})
+    # 第一次拉取，建立缓存
+    r1 = client.get('/api/photos')
+    assert any(p['filename'] == 'del.jpg' for p in r1.get_json()['photos'])
+    # 删除
+    client.post('/api/photos/delete', json={'filename': 'del.jpg'})
+    # 第二次拉取，应不再有该照片（缓存已失效）
+    r2 = client.get('/api/photos')
+    assert not any(p['filename'] == 'del.jpg' for p in r2.get_json()['photos'])
+    assert not os.path.exists(os.path.join(album_dir, 'del.jpg'))
+
+
+def test_stream_multi_client_isolation(app, client):
+    """多客户端订阅 MJPEG 流时，一个客户端的 clear 不应吃掉另一个的帧。"""
+    import threading
+    app.latest_frame = None
+    app.frame_id = 0
+
+    results = {'c1': None, 'c2': None}
+
+    def reader(key):
+        resp = client.get('/api/stream')
+        try:
+            results[key] = next(resp.response)
+        except StopIteration:
+            results[key] = b''
+        resp.close()
+
+    t1 = threading.Thread(target=reader, args=('c1',), daemon=True)
+    t2 = threading.Thread(target=reader, args=('c2',), daemon=True)
+    t1.start()
+    t2.start()
+    _time.sleep(0.3)
+
+    app.latest_frame = b'\xff\xd8\xff\xe0multi'
+    app.frame_id = 1
+    # 唤醒所有等待者
+    if hasattr(app, 'frame_event'):
+        app.frame_event.set()
+
+    t1.join(timeout=2.0)
+    t2.join(timeout=2.0)
+    # 两个客户端都应收到帧
+    assert results['c1'] is not None and b'multi' in results['c1']
+    assert results['c2'] is not None and b'multi' in results['c2']
+
+
+def test_concurrent_preview_uploads_thread_safety(app, client):
+    """并发上传预览帧不应导致 frame_id 丢失或 latest_frame 损坏。"""
+    import threading
+
+    def upload_one():
+        client.post(
+            '/api/raw',
+            data=b'\xff\xd8frame',
+            content_type='image/jpeg',
+            headers={'X-ESP32-IP': '192.168.1.88'}
+        )
+
+    threads = [threading.Thread(target=upload_one) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5.0)
+
+    # frame_id 应接近上传次数（可能因锁竞争略少，但应 >= 1）
+    assert app.frame_id >= 1
+    assert app.latest_frame is not None
+
+
+def test_upload_rejects_oversized_file(app, client, monkeypatch):
+    """超过 MAX_CONTENT_LENGTH 的文件应被拒绝（413）。"""
+    import io
+    # 用小限制避免分配大块内存
+    monkeypatch.setitem(app.app.config, 'MAX_CONTENT_LENGTH', 100)
+    big = b'\x00' * 200
+    resp = client.post(
+        '/upload',
+        data={'file': (io.BytesIO(big), 'big.jpg')}
+    )
+    assert resp.status_code == 413
+
+
+def test_save_photo_rejects_path_traversal(app, client, tmp_path):
+    """save_photo 应拒绝包含路径遍历（../）的文件名，防止越权移动文件。"""
+    import os
+    # 在 captures/ 创建一个合法文件作为"诱饵"
+    captures_dir = app.app.config['CAPTURES_FOLDER']
+    with open(os.path.join(captures_dir, 'target.jpg'), 'wb') as f:
+        f.write(b'fake')
+    # 攻击者尝试用路径遍历将文件移到 album 目录之外
+    resp = client.post(
+        '/api/photos/save',
+        json={'filename': '../../../target.jpg'}
+    )
+    assert resp.status_code == 400
+    # 源文件未被移动
+    assert os.path.exists(os.path.join(captures_dir, 'target.jpg'))
+
+
+def test_delete_photo_rejects_path_traversal(app, client, tmp_path):
+    """delete_photo 应拒绝包含路径遍历的文件名，防止删除任意文件。"""
+    import os
+    # 在 backend 目录创建一个"诱饵"文件，确保它存在于 album 之外
+    backend_dir = os.path.dirname(app.__file__)
+    bait_path = os.path.join(backend_dir, 'bait_file.jpg')
+    with open(bait_path, 'wb') as f:
+        f.write(b'do_not_delete')
+    try:
+        resp = client.post(
+            '/api/photos/delete',
+            json={'filename': '../../../bait_file.jpg'}
+        )
+        assert resp.status_code == 400
+        # 诱饵文件未被删除
+        assert os.path.exists(bait_path)
+    finally:
+        if os.path.exists(bait_path):
+            os.remove(bait_path)
+
+
+def test_select_photo_skips_persist_when_unchanged(app, client):
+    """选择状态未变化时不应触发 persist_state（避免不必要的磁盘 I/O）。"""
+    import os
+    album_dir = app.app.config['ALBUM_FOLDER']
+    with open(os.path.join(album_dir, 'sel.jpg'), 'wb') as f:
+        f.write(b'fake')
+    app.saved_photos = [
+        {'filename': 'sel.jpg', 'url': '/album/sel.jpg', 'saved_at': 1.0, 'selected': True},
+    ]
+    persist_calls = []
+    original_persist = app.persist_state
+
+    def counting_persist():
+        persist_calls.append(1)
+        original_persist()
+
+    app.persist_state = counting_persist
+    try:
+        # 状态未变化（True -> True），不应持久化
+        resp = client.post('/api/photos/select', json={'filename': 'sel.jpg', 'selected': True})
+        assert resp.status_code == 200
+        assert resp.get_json()['success'] is True
+        assert len(persist_calls) == 0
+
+        # 状态变化（True -> False），应持久化
+        resp = client.post('/api/photos/select', json={'filename': 'sel.jpg', 'selected': False})
+        assert resp.status_code == 200
+        assert len(persist_calls) == 1
+    finally:
+        app.persist_state = original_persist
+

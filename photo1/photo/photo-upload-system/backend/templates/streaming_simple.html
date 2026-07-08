@@ -309,6 +309,17 @@
         let esp32Ip = '';
         let flashEnabled = false;
         let savedPhotos = [];
+
+        // HTML 转义工具：防止相册文件名/URL 注入导致 XSS
+        function escapeHtml(str) {
+            if (str == null) return '';
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
         
         // 从本地存储加载IP地址
         function loadIpAddress() {
@@ -550,10 +561,10 @@
             }
             
             grid.innerHTML = savedPhotos.map(photo => `
-                <div class="gallery-item ${photo.selected ? 'selected' : ''}" onclick="togglePhotoSelection('${photo.filename}')">
-                    <button class="delete-btn" onclick="event.stopPropagation(); deletePhoto('${photo.filename}')">×</button>
+                <div class="gallery-item ${photo.selected ? 'selected' : ''}" onclick="togglePhotoSelection('${escapeHtml(photo.filename)}')">
+                    <button class="delete-btn" onclick="event.stopPropagation(); deletePhoto('${escapeHtml(photo.filename)}')">×</button>
                     <div class="select-overlay">✓</div>
-                    <img src="${photo.url}" alt="${photo.filename}" loading="lazy">
+                    <img src="${escapeHtml(photo.url)}" alt="${escapeHtml(photo.filename)}" loading="lazy">
                 </div>
             `).join('');
         }

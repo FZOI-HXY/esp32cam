@@ -40,8 +40,21 @@ latest_frame = None
 latest_frame_time = 0
 # 帧版本号，每次更新预览帧时自增，用于 MJPEG 流去重
 frame_id = 0
-# 帧到达事件：新帧写入时 set，stream 生成器 wait 后立即推送
-frame_event = threading.Event()
+# 帧到达条件变量：新帧写入时 notify_all，所有 stream 订阅者各自 wait 后推送。
+# 使用 Condition 而非 Event 避免多客户端 clear() 互相吃帧的问题。
+frame_condition = threading.Condition()
+
+
+class _FrameEventShim:
+    """向后兼容层：测试代码调用 frame_event.set() 时通知所有流订阅者。"""
+
+    def set(self):
+        with frame_condition:
+            frame_condition.notify_all()
+
+
+# 保留 frame_event 名称供外部代码/测试兼容
+frame_event = _FrameEventShim()
 
 # 存储ESP32-CAM的IP地址
 esp32_cam_ip = None
@@ -66,6 +79,35 @@ _album_files_cache_mtime = 0
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def validate_esp32_ip(ip_str):
+    """校验 ESP32-CAM IP 地址：仅允许私有/回环/链路本地地址，防止 SSRF。
+
+    返回校验通过的 IP 字符串；不通过返回 None。
+    """
+    if not ip_str:
+        return None
+    ip_pattern = r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$'
+    if not re.match(ip_pattern, ip_str):
+        return None
+    try:
+        addr = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return None
+    if not (addr.is_private or addr.is_loopback or addr.is_link_local):
+        return None
+    return ip_str
+
+
+def is_safe_filename(filename):
+    """检查文件名是否安全：不含路径分隔符或 .. 遍历，防止路径遍历攻击。"""
+    if not filename:
+        return False
+    # 拒绝包含路径分隔符或 .. 的文件名
+    if '/' in filename or '\\' in filename or '..' in filename:
+        return False
+    # 文件名应与 basename 一致（即不含目录部分）
+    return filename == os.path.basename(filename)
 
 def reload_state_from_disk():
     """从 state.json 加载持久化字段到全局变量。"""
@@ -279,12 +321,13 @@ def api_raw_upload():
         if not is_capturing:
             # 验证数据完整性
             if len(request.data) > 0:
-                # 更新最新画面
-                latest_frame = request.data
-                latest_frame_time = time.time()
-                frame_id += 1
-                # 唤醒所有 MJPEG 流订阅者立即推送新帧
-                frame_event.set()
+                # 在 Condition 锁内更新共享帧状态，保证并发安全与内存可见性
+                with frame_condition:
+                    latest_frame = request.data
+                    latest_frame_time = time.time()
+                    frame_id += 1
+                    # 唤醒所有 MJPEG 流订阅者立即推送新帧（广播，不会互相吃帧）
+                    frame_condition.notify_all()
             else:
                 print('接收到空数据')
         
@@ -325,17 +368,21 @@ def get_frame():
 
 @app.route('/api/stream')
 def video_stream():
-    """MJPEG 实时流：单连接持续推送，新帧到达时由 frame_event 唤醒立即发送。"""
+    """MJPEG 实时流：单连接持续推送，新帧到达时由 frame_condition 唤醒立即发送。
+
+    使用 Condition.notify_all() 广播：每个订阅者各自 wait，不会被其他客户端
+    的 clear() 干扰，保证多客户端各自收到完整帧序列。
+    """
     boundary = 'frame'
 
     def generate():
         last_id = -1
         while True:
-            # 等待新帧事件，最长等 1 秒（保活，避免连接被代理超时关闭）
-            frame_event.wait(timeout=1.0)
-            frame_event.clear()
-            frame = latest_frame
-            fid = frame_id
+            # 在 Condition 锁内等待并读取帧，保证与生产者的写入互斥一致
+            with frame_condition:
+                frame_condition.wait(timeout=1.0)
+                frame = latest_frame
+                fid = frame_id
             if frame is not None and fid != last_id:
                 last_id = fid
                 yield (
@@ -365,17 +412,12 @@ def capture():
                 print(f"使用缓存的ESP32-CAM IP地址: {esp32_ip}")
             else:
                 return jsonify({'error': '未指定ESP32-CAM IP地址'}), 400
-        
+
         # 验证IP地址格式与网段（防止 SSRF，仅允许私有/回环/链路本地地址）
-        ip_pattern = r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$'
-        if not re.match(ip_pattern, esp32_ip):
-            return jsonify({'error': '无效的IP地址格式'}), 400
-        try:
-            addr = ipaddress.ip_address(esp32_ip)
-        except ValueError:
-            return jsonify({'error': '无效的IP地址格式'}), 400
-        if not (addr.is_private or addr.is_loopback or addr.is_link_local):
-            return jsonify({'error': '仅允许访问局域网内的 ESP32-CAM 地址'}), 400
+        validated_ip = validate_esp32_ip(esp32_ip)
+        if not validated_ip:
+            return jsonify({'error': '无效的IP地址或非局域网地址'}), 400
+        esp32_ip = validated_ip
 
         # 发送拍照指令
         is_capturing = True
@@ -460,7 +502,13 @@ def flash_control():
 
         # 发送指令到ESP32-CAM
         try:
+            # 解析 IP：优先用户传入 → 缓存 → 硬编码 fallback
             esp32_ip = data.get('esp32_ip') or esp32_cam_ip or '192.168.137.74'
+            # SSRF 校验：fallback IP 也必须经过验证（仅允许私有/回环/链路本地）
+            validated_ip = validate_esp32_ip(esp32_ip)
+            if not validated_ip:
+                return jsonify({'success': False, 'error': '无效的ESP32-CAM IP地址或非局域网地址'}), 400
+            esp32_ip = validated_ip
 
             # 发送闪光灯控制指令
             response = requests.post(
@@ -518,6 +566,10 @@ def save_photo():
         if not filename:
             return jsonify({'success': False, 'error': '没有指定照片'}), 400
 
+        # 路径遍历防护：拒绝含分隔符或 .. 的文件名
+        if not is_safe_filename(filename):
+            return jsonify({'success': False, 'error': '无效的文件名'}), 400
+
         # 在 captures/ 与 uploads/ 中查找源文件（优先 captures，因为是相机拍照默认目录）
         captures_dir = app.config['CAPTURES_FOLDER']
         uploads_dir = app.config['UPLOAD_FOLDER']
@@ -546,17 +598,23 @@ def save_photo():
             'selected': False
         }
 
-        # 避免重复添加
-        existing = [p for p in saved_photos if p['filename'] == filename]
+        # 避免重复添加（使用 .get 避免 KeyError，兼容缺 filename 字段的旧数据）
+        existing = [p for p in saved_photos if p.get('filename') == filename]
         if not existing:
             saved_photos.append(photo_info)
             print(f"照片已保存到相册: {filename}")
             persist_state()
         else:
-            # 已存在则更新 url/location 字段（兼容旧数据）
+            # 已存在则更新 url/location 字段（兼容旧数据），仅在字段实际变化时持久化
             idx = saved_photos.index(existing[0])
-            saved_photos[idx].update(photo_info)
-            persist_state()
+            old = saved_photos[idx]
+            changed = False
+            for k, v in photo_info.items():
+                if old.get(k) != v:
+                    old[k] = v
+                    changed = True
+            if changed:
+                persist_state()
 
         return jsonify({
             'success': True,
@@ -599,9 +657,16 @@ def select_photo():
         if not filename:
             return jsonify({'success': False, 'error': '没有指定照片'}), 400
         
-        # 更新照片选择状态
+        # 更新照片选择状态（使用 .get 避免 KeyError，兼容缺 filename 字段的旧数据）
         for photo in saved_photos:
-            if photo['filename'] == filename:
+            if photo.get('filename') == filename:
+                # 仅在选择状态实际变化时才写磁盘，避免重复点击产生无效 I/O
+                if photo.get('selected') == selected:
+                    return jsonify({
+                        'success': True,
+                        'message': f"照片已{'选择' if selected else '取消选择'}",
+                        'photo': photo
+                    })
                 photo['selected'] = selected
                 print(f"照片选择状态已更新: {filename} - {'已选择' if selected else '未选择'}")
                 persist_state()
@@ -610,7 +675,7 @@ def select_photo():
                     'message': f"照片已{'选择' if selected else '取消选择'}",
                     'photo': photo
                 })
-        
+
         return jsonify({'success': False, 'error': '照片未找到'}), 404
         
     except Exception as e:
@@ -620,30 +685,36 @@ def select_photo():
 @app.route('/api/photos/delete', methods=['POST'])
 def delete_photo():
     """删除照片"""
-    global saved_photos
-    
+    global saved_photos, _album_files_cache, _album_files_cache_mtime
+
     try:
         data = request.get_json() or {}
         filename = data.get('filename')
-        
+
         if not filename:
             return jsonify({'success': False, 'error': '没有指定照片'}), 400
-        
-        # 从列表中移除
-        saved_photos = [p for p in saved_photos if p['filename'] != filename]
+
+        # 路径遍历防护：拒绝含分隔符或 .. 的文件名
+        if not is_safe_filename(filename):
+            return jsonify({'success': False, 'error': '无效的文件名'}), 400
+
+        # 从列表中移除（使用 .get 避免 KeyError，兼容缺 filename 字段的旧数据）
+        saved_photos = [p for p in saved_photos if p.get('filename') != filename]
 
         # 删除文件（在 album/ 目录）
         filepath = os.path.join(app.config['ALBUM_FOLDER'], filename)
         if os.path.exists(filepath):
             os.remove(filepath)
             print(f"照片已删除: {filename}")
+        # 失效相册文件缓存，确保下次 /api/photos 反映最新状态
+        _album_files_cache = None
         persist_state()
-        
+
         return jsonify({
             'success': True,
             'message': '照片已删除'
         })
-        
+
     except Exception as e:
         print(f"删除照片失败: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
